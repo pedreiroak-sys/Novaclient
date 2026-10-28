@@ -1,0 +1,694 @@
+name: Build Nova Client
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.8
+
+      - name: Criar arquivos do projeto
+        run: |
+          cat > 'settings.gradle' <<'NOVA_EOF_MARKER'
+          pluginManagement {
+              repositories {
+                  maven {
+                      name = 'Fabric'
+                      url = 'https://maven.fabricmc.net/'
+                  }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          NOVA_EOF_MARKER
+          cat > 'gradle.properties' <<'NOVA_EOF_MARKER'
+          org.gradle.jvmargs=-Xmx2G
+          org.gradle.parallel=true
+
+          # Minecraft 1.20.1
+          minecraft_version=1.20.1
+          yarn_mappings=1.20.1+build.10
+          loader_version=0.15.11
+
+          # Mod
+          mod_version=1.0.0
+          maven_group=com.novaclient
+          archives_base_name=novaclient
+
+          # Fabric API
+          fabric_version=0.92.2+1.20.1
+          NOVA_EOF_MARKER
+          cat > 'build.gradle' <<'NOVA_EOF_MARKER'
+          plugins {
+              id 'fabric-loom' version '1.6-SNAPSHOT'
+              id 'maven-publish'
+          }
+
+          version = project.mod_version
+          group = project.maven_group
+
+          base {
+              archivesName = project.archives_base_name
+          }
+
+          repositories {
+          }
+
+          dependencies {
+              minecraft "com.mojang:minecraft:${project.minecraft_version}"
+              mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+              modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+          }
+
+          processResources {
+              inputs.property "version", project.version
+
+              filesMatching("fabric.mod.json") {
+                  expand "version": project.version
+              }
+          }
+
+          tasks.withType(JavaCompile).configureEach {
+              it.options.release = 17
+              it.options.encoding = "UTF-8"
+          }
+
+          java {
+              withSourcesJar()
+              sourceCompatibility = JavaVersion.VERSION_17
+              targetCompatibility = JavaVersion.VERSION_17
+          }
+          NOVA_EOF_MARKER
+          mkdir -p 'src/main/resources'
+          cat > 'src/main/resources/fabric.mod.json' <<'NOVA_EOF_MARKER'
+          {
+            "schemaVersion": 1,
+            "id": "novaclient",
+            "version": "${version}",
+            "name": "Nova Client",
+            "description": "Client leve para celular (Mojo Launcher): HUD, Auto Sprint, Zoom e Fullbright com menu touch.",
+            "authors": ["Nova"],
+            "license": "MIT",
+            "environment": "client",
+            "entrypoints": {
+              "client": ["com.novaclient.NovaClient"]
+            },
+            "depends": {
+              "fabricloader": ">=0.14.21",
+              "minecraft": "~1.20.1",
+              "java": ">=17",
+              "fabric-api": "*"
+            }
+          }
+          NOVA_EOF_MARKER
+          mkdir -p 'src/main/resources/assets/novaclient/lang'
+          cat > 'src/main/resources/assets/novaclient/lang/en_us.json' <<'NOVA_EOF_MARKER'
+          {
+            "category.novaclient": "Nova Client",
+            "key.novaclient.menu": "Open Nova menu",
+            "key.novaclient.zoom": "Zoom (hold)",
+            "key.novaclient.sprint": "Toggle Auto Sprint",
+            "key.novaclient.fullbright": "Toggle Fullbright",
+            "key.novaclient.hud": "Toggle HUD"
+          }
+          NOVA_EOF_MARKER
+          mkdir -p 'src/main/resources/assets/novaclient/lang'
+          cat > 'src/main/resources/assets/novaclient/lang/pt_br.json' <<'NOVA_EOF_MARKER'
+          {
+            "category.novaclient": "Nova Client",
+            "key.novaclient.menu": "Abrir menu Nova",
+            "key.novaclient.zoom": "Zoom (segurar)",
+            "key.novaclient.sprint": "Alternar Auto Sprint",
+            "key.novaclient.fullbright": "Alternar Fullbright",
+            "key.novaclient.hud": "Alternar HUD"
+          }
+          NOVA_EOF_MARKER
+          mkdir -p 'src/main/java/com/novaclient'
+          cat > 'src/main/java/com/novaclient/NovaConfig.java' <<'NOVA_EOF_MARKER'
+          package com.novaclient;
+
+          import com.google.gson.Gson;
+          import com.google.gson.GsonBuilder;
+          import net.fabricmc.loader.api.FabricLoader;
+
+          import java.io.IOException;
+          import java.io.Reader;
+          import java.io.Writer;
+          import java.nio.charset.StandardCharsets;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+
+          /**
+           * Configuração salva em .minecraft/config/novaclient.json
+           */
+          public class NovaConfig {
+              private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+
+              public static NovaConfig INSTANCE = new NovaConfig();
+
+              // HUD
+              public boolean hudEnabled = true;
+              public boolean showFps = true;
+              public boolean showPing = true;
+              public boolean showCoords = true;
+              public boolean showDirection = true;
+              public boolean showClock = false;
+              public boolean showArmor = true;
+
+              /** Tamanho do HUD em % (60 a 200). Em celular, 100-130 costuma ficar bom. */
+              public int hudScalePercent = 100;
+
+              /** 0 = topo-esquerda, 1 = topo-direita, 2 = baixo-esquerda, 3 = baixo-direita */
+              public int hudCorner = 0;
+
+              // Módulos
+              public boolean autoSprint = true;
+              public boolean fullbright = false;
+
+              /** FOV usado enquanto o zoom está ativo (30 a 110, menor = mais zoom). */
+              public int zoomFov = 30;
+
+              private static Path file() {
+                  return FabricLoader.getInstance().getConfigDir().resolve("novaclient.json");
+              }
+
+              public static void load() {
+                  Path path = file();
+                  if (!Files.exists(path)) {
+                      save();
+                      return;
+                  }
+                  try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+                      NovaConfig loaded = GSON.fromJson(reader, NovaConfig.class);
+                      if (loaded != null) {
+                          INSTANCE = loaded;
+                          INSTANCE.sanitize();
+                      }
+                  } catch (IOException | RuntimeException e) {
+                      System.err.println("[NovaClient] Falha ao ler config, usando padrão: " + e);
+                      INSTANCE = new NovaConfig();
+                  }
+              }
+
+              public static void save() {
+                  INSTANCE.sanitize();
+                  try {
+                      Files.createDirectories(file().getParent());
+                      try (Writer writer = Files.newBufferedWriter(file(), StandardCharsets.UTF_8)) {
+                          GSON.toJson(INSTANCE, writer);
+                      }
+                  } catch (IOException e) {
+                      System.err.println("[NovaClient] Falha ao salvar config: " + e);
+                  }
+              }
+
+              private void sanitize() {
+                  hudScalePercent = Math.max(60, Math.min(200, hudScalePercent));
+                  hudCorner = Math.floorMod(hudCorner, 4);
+                  zoomFov = Math.max(30, Math.min(110, zoomFov));
+              }
+          }
+          NOVA_EOF_MARKER
+          mkdir -p 'src/main/java/com/novaclient'
+          cat > 'src/main/java/com/novaclient/HudRenderer.java' <<'NOVA_EOF_MARKER'
+          package com.novaclient;
+
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.network.ClientPlayNetworkHandler;
+          import net.minecraft.client.network.PlayerListEntry;
+          import net.minecraft.item.ItemStack;
+          import net.minecraft.util.math.Direction;
+
+          import java.time.LocalTime;
+          import java.time.format.DateTimeFormatter;
+          import java.util.ArrayList;
+          import java.util.List;
+          import java.util.Locale;
+
+          /**
+           * Desenha o HUD (FPS, ping, coordenadas, direção, relógio, armadura).
+           */
+          public final class HudRenderer {
+              private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm:ss");
+
+              private static final int PAD = 4;
+              private static final int LINE_H = 11;
+              private static final int ARMOR_ROW_H = 18;
+              private static final int MARGIN = 4;
+
+              private static long windowStart = System.nanoTime();
+              private static int frames = 0;
+              private static int fps = 0;
+
+              private HudRenderer() {
+              }
+
+              public static void render(DrawContext ctx, float tickDelta) {
+                  updateFps();
+
+                  MinecraftClient mc = MinecraftClient.getInstance();
+                  NovaConfig cfg = NovaConfig.INSTANCE;
+
+                  if (!cfg.hudEnabled || mc.player == null || mc.options.hudHidden || mc.options.debugEnabled) {
+                      return;
+                  }
+
+                  List<String> lines = new ArrayList<>();
+                  if (cfg.showFps) {
+                      lines.add("FPS: " + fps);
+                  }
+                  if (cfg.showPing) {
+                      lines.add("Ping: " + ping(mc));
+                  }
+                  if (cfg.showCoords) {
+                      lines.add(String.format(Locale.ROOT, "XYZ: %.1f / %.1f / %.1f",
+                              mc.player.getX(), mc.player.getY(), mc.player.getZ()));
+                  }
+                  if (cfg.showDirection) {
+                      Direction facing = mc.player.getHorizontalFacing();
+                      lines.add("Dir: " + capitalize(facing.asString()));
+                  }
+                  if (cfg.showClock) {
+                      lines.add(LocalTime.now().format(CLOCK));
+                  }
+                  if (cfg.autoSprint) {
+                      lines.add("[Auto Sprint]");
+                  }
+
+                  List<ItemStack> armor = new ArrayList<>();
+                  if (cfg.showArmor) {
+                      // slot 3 = capacete ... slot 0 = botas
+                      for (int slot = 3; slot >= 0; slot--) {
+                          ItemStack stack = mc.player.getInventory().getArmorStack(slot);
+                          if (!stack.isEmpty()) {
+                              armor.add(stack);
+                          }
+                      }
+                  }
+
+                  if (lines.isEmpty() && armor.isEmpty()) {
+                      return;
+                  }
+
+                  // Medidas (em coordenadas "virtuais", antes da escala)
+                  int contentW = 0;
+                  for (String line : lines) {
+                      contentW = Math.max(contentW, mc.textRenderer.getWidth(line));
+                  }
+                  for (ItemStack stack : armor) {
+                      contentW = Math.max(contentW, 18 + mc.textRenderer.getWidth(durabilityText(stack)));
+                  }
+                  int boxW = contentW + PAD * 2;
+                  int boxH = PAD * 2 + lines.size() * LINE_H + armor.size() * ARMOR_ROW_H;
+
+                  float scale = cfg.hudScalePercent / 100f;
+                  float virtualW = ctx.getScaledWindowWidth() / scale;
+                  float virtualH = ctx.getScaledWindowHeight() / scale;
+
+                  boolean right = cfg.hudCorner == 1 || cfg.hudCorner == 3;
+                  boolean bottom = cfg.hudCorner == 2 || cfg.hudCorner == 3;
+                  int x = right ? Math.round(virtualW - boxW - MARGIN) : MARGIN;
+                  int y = bottom ? Math.round(virtualH - boxH - MARGIN) : MARGIN;
+
+                  ctx.getMatrices().push();
+                  ctx.getMatrices().scale(scale, scale, 1f);
+
+                  ctx.fill(x, y, x + boxW, y + boxH, 0x90000000);
+
+                  int ty = y + PAD;
+                  for (String line : lines) {
+                      ctx.drawTextWithShadow(mc.textRenderer, line, x + PAD, ty, 0xFFFFFF);
+                      ty += LINE_H;
+                  }
+                  for (ItemStack stack : armor) {
+                      ctx.drawItem(stack, x + PAD, ty);
+                      ctx.drawTextWithShadow(mc.textRenderer, durabilityText(stack), x + PAD + 18, ty + 4, 0xFFFFFF);
+                      ty += ARMOR_ROW_H;
+                  }
+
+                  ctx.getMatrices().pop();
+              }
+
+              private static void updateFps() {
+                  frames++;
+                  long now = System.nanoTime();
+                  if (now - windowStart >= 1_000_000_000L) {
+                      fps = frames;
+                      frames = 0;
+                      windowStart = now;
+                  }
+              }
+
+              private static String ping(MinecraftClient mc) {
+                  if (mc.isInSingleplayer()) {
+                      return "-";
+                  }
+                  ClientPlayNetworkHandler handler = mc.getNetworkHandler();
+                  if (handler == null || mc.player == null) {
+                      return "-";
+                  }
+                  PlayerListEntry entry = handler.getPlayerListEntry(mc.player.getUuid());
+                  return entry == null ? "-" : entry.getLatency() + " ms";
+              }
+
+              private static String durabilityText(ItemStack stack) {
+                  if (!stack.isDamageable()) {
+                      return "";
+                  }
+                  return String.valueOf(stack.getMaxDamage() - stack.getDamage());
+              }
+
+              private static String capitalize(String s) {
+                  if (s.isEmpty()) {
+                      return s;
+                  }
+                  return Character.toUpperCase(s.charAt(0)) + s.substring(1);
+              }
+          }
+          NOVA_EOF_MARKER
+          mkdir -p 'src/main/java/com/novaclient'
+          cat > 'src/main/java/com/novaclient/NovaMenuScreen.java' <<'NOVA_EOF_MARKER'
+          package com.novaclient;
+
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.gui.screen.Screen;
+          import net.minecraft.client.gui.widget.ButtonWidget;
+          import net.minecraft.text.Text;
+
+          import java.util.function.BooleanSupplier;
+          import java.util.function.Consumer;
+
+          /**
+           * Menu com botões grandes, pensado para toque.
+           */
+          public class NovaMenuScreen extends Screen {
+              private static final String[] CORNERS = {"Topo esq.", "Topo dir.", "Baixo esq.", "Baixo dir."};
+
+              private static final int GAP = 6;
+              private static final int BTN_H = 22;
+              private static final int ROW_STEP = 26;
+              private static final int TOP = 30;
+
+              private final Screen parent;
+
+              private int cols;
+              private int colW;
+              private int startX;
+              private int index;
+
+              public NovaMenuScreen(Screen parent) {
+                  super(Text.literal("Nova Client"));
+                  this.parent = parent;
+              }
+
+              @Override
+              protected void init() {
+                  NovaConfig c = NovaConfig.INSTANCE;
+
+                  cols = width >= 400 ? 3 : 2;
+                  colW = Math.min(140, (width - 20 - GAP * (cols - 1)) / cols);
+                  startX = (width - (cols * colW + (cols - 1) * GAP)) / 2;
+                  index = 0;
+
+                  addDrawableChild(toggle("HUD", () -> c.hudEnabled, v -> c.hudEnabled = v));
+                  addDrawableChild(toggle("FPS", () -> c.showFps, v -> c.showFps = v));
+                  addDrawableChild(toggle("Ping", () -> c.showPing, v -> c.showPing = v));
+                  addDrawableChild(toggle("Coords", () -> c.showCoords, v -> c.showCoords = v));
+                  addDrawableChild(toggle("Direção", () -> c.showDirection, v -> c.showDirection = v));
+                  addDrawableChild(toggle("Relógio", () -> c.showClock, v -> c.showClock = v));
+                  addDrawableChild(toggle("Armadura", () -> c.showArmor, v -> c.showArmor = v));
+                  addDrawableChild(toggle("Auto Sprint", () -> c.autoSprint, v -> c.autoSprint = v));
+                  addDrawableChild(toggle("Fullbright", () -> c.fullbright, v -> c.fullbright = v));
+
+                  // Tamanho do HUD: 60% -> 200% (de 10 em 10), depois volta a 60%
+                  addDrawableChild(cycler(
+                          () -> Text.literal("Tamanho: " + c.hudScalePercent + "%"),
+                          () -> c.hudScalePercent = c.hudScalePercent >= 200 ? 60 : c.hudScalePercent + 10));
+
+                  // Posição do HUD
+                  addDrawableChild(cycler(
+                          () -> Text.literal("Posição: " + CORNERS[Math.floorMod(c.hudCorner, 4)]),
+                          () -> c.hudCorner = (c.hudCorner + 1) % 4));
+
+                  // FOV do zoom: 30 -> 60 (de 10 em 10)
+                  addDrawableChild(cycler(
+                          () -> Text.literal("Zoom FOV: " + c.zoomFov),
+                          () -> c.zoomFov = c.zoomFov >= 60 ? 30 : c.zoomFov + 10));
+
+                  int rows = (index + cols - 1) / cols;
+                  int doneY = TOP + rows * ROW_STEP + 6;
+                  addDrawableChild(ButtonWidget.builder(Text.literal("Pronto"), b -> close())
+                          .dimensions(width / 2 - 60, doneY, 120, BTN_H)
+                          .build());
+              }
+
+              private ButtonWidget toggle(String name, BooleanSupplier getter, Consumer<Boolean> setter) {
+                  int x = nextX();
+                  int y = nextY();
+                  index++;
+                  return ButtonWidget.builder(onOff(name, getter.getAsBoolean()), b -> {
+                      setter.accept(!getter.getAsBoolean());
+                      b.setMessage(onOff(name, getter.getAsBoolean()));
+                  }).dimensions(x, y, colW, BTN_H).build();
+              }
+
+              private ButtonWidget cycler(java.util.function.Supplier<Text> label, Runnable action) {
+                  int x = nextX();
+                  int y = nextY();
+                  index++;
+                  return ButtonWidget.builder(label.get(), b -> {
+                      action.run();
+                      b.setMessage(label.get());
+                  }).dimensions(x, y, colW, BTN_H).build();
+              }
+
+              private int nextX() {
+                  return startX + (index % cols) * (colW + GAP);
+              }
+
+              private int nextY() {
+                  return TOP + (index / cols) * ROW_STEP;
+              }
+
+              private static Text onOff(String name, boolean value) {
+                  return Text.literal(name + ": " + (value ? "ON" : "OFF"));
+              }
+
+              @Override
+              public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
+                  renderBackground(ctx);
+                  ctx.drawCenteredTextWithShadow(textRenderer, title, width / 2, 12, 0xFFFFFF);
+                  super.render(ctx, mouseX, mouseY, delta);
+              }
+
+              @Override
+              public void removed() {
+                  NovaConfig.save();
+              }
+
+              @Override
+              public void close() {
+                  if (client != null) {
+                      client.setScreen(parent);
+                  }
+              }
+          }
+          NOVA_EOF_MARKER
+          mkdir -p 'src/main/java/com/novaclient'
+          cat > 'src/main/java/com/novaclient/NovaClient.java' <<'NOVA_EOF_MARKER'
+          package com.novaclient;
+
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+          import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+          import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+          import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+          import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+          import net.fabricmc.fabric.api.client.screen.v1.Screens;
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.gui.screen.TitleScreen;
+          import net.minecraft.client.gui.screen.GameMenuScreen;
+          import net.minecraft.client.gui.widget.ButtonWidget;
+          import net.minecraft.client.network.ClientPlayerEntity;
+          import net.minecraft.client.option.KeyBinding;
+          import net.minecraft.client.util.InputUtil;
+          import net.minecraft.entity.effect.StatusEffectInstance;
+          import net.minecraft.entity.effect.StatusEffects;
+          import net.minecraft.text.Text;
+          import org.lwjgl.glfw.GLFW;
+
+          /**
+           * Nova Client - client leve para Fabric 1.20.1 (feito para rodar no Mojo Launcher).
+           */
+          public class NovaClient implements ClientModInitializer {
+              private static final String CATEGORY = "category.novaclient";
+              private static final String MENU_BUTTON_LABEL = "Nova";
+
+              private static KeyBinding menuKey;
+              private static KeyBinding zoomKey;
+              private static KeyBinding sprintKey;
+              private static KeyBinding fullbrightKey;
+              private static KeyBinding hudKey;
+
+              private static boolean zooming = false;
+              private static int savedFov = 70;
+              private static boolean nightVisionApplied = false;
+
+              @Override
+              public void onInitializeClient() {
+                  NovaConfig.load();
+
+                  menuKey = register("key.novaclient.menu", GLFW.GLFW_KEY_RIGHT_SHIFT);
+                  zoomKey = register("key.novaclient.zoom", GLFW.GLFW_KEY_C);
+                  sprintKey = register("key.novaclient.sprint", GLFW.GLFW_KEY_V);
+                  fullbrightKey = register("key.novaclient.fullbright", GLFW.GLFW_KEY_B);
+                  hudKey = register("key.novaclient.hud", GLFW.GLFW_KEY_H);
+
+                  HudRenderCallback.EVENT.register(HudRenderer::render);
+                  ClientTickEvents.END_CLIENT_TICK.register(NovaClient::onTick);
+
+                  // Ao entrar em um mundo/servidor, zera o estado do Fullbright
+                  ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> nightVisionApplied = false);
+
+                  // Garante que o FOV volta ao normal ao fechar o jogo com o zoom ativo
+                  ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
+                      if (zooming) {
+                          client.options.getFov().setValue(savedFov);
+                          zooming = false;
+                      }
+                  });
+
+                  // /nova abre o menu (útil no celular, onde o chat é fácil de acessar)
+                  ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
+                          dispatcher.register(ClientCommandManager.literal("nova").executes(ctx -> {
+                              MinecraftClient mc = ctx.getSource().getClient();
+                              // send() adia para o próximo tick, senão o chat fecha o menu logo em seguida
+                              mc.send(() -> mc.setScreen(new NovaMenuScreen(null)));
+                              return 1;
+                          })));
+
+                  // Botão "Nova" no menu de pausa e na tela inicial (toque, sem precisar de teclado)
+                  ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
+                      if (screen instanceof GameMenuScreen || screen instanceof TitleScreen) {
+                          boolean already = Screens.getButtons(screen).stream()
+                                  .anyMatch(w -> w instanceof ButtonWidget
+                                          && MENU_BUTTON_LABEL.equals(w.getMessage().getString()));
+                          if (already) {
+                              return;
+                          }
+                          Screens.getButtons(screen).add(
+                                  ButtonWidget.builder(Text.literal(MENU_BUTTON_LABEL),
+                                                  b -> client.setScreen(new NovaMenuScreen(screen)))
+                                          .dimensions(4, 4, 56, 20)
+                                          .build());
+                      }
+                  });
+              }
+
+              private static KeyBinding register(String translationKey, int glfwKey) {
+                  return KeyBindingHelper.registerKeyBinding(
+                          new KeyBinding(translationKey, InputUtil.Type.KEYSYM, glfwKey, CATEGORY));
+              }
+
+              private static void onTick(MinecraftClient mc) {
+                  NovaConfig cfg = NovaConfig.INSTANCE;
+
+                  // --- Teclas ---
+                  while (menuKey.wasPressed()) {
+                      if (mc.currentScreen == null) {
+                          mc.setScreen(new NovaMenuScreen(null));
+                      }
+                  }
+                  while (hudKey.wasPressed()) {
+                      cfg.hudEnabled = !cfg.hudEnabled;
+                      NovaConfig.save();
+                      notice(mc, "HUD", cfg.hudEnabled);
+                  }
+                  while (sprintKey.wasPressed()) {
+                      cfg.autoSprint = !cfg.autoSprint;
+                      NovaConfig.save();
+                      notice(mc, "Auto Sprint", cfg.autoSprint);
+                  }
+                  while (fullbrightKey.wasPressed()) {
+                      cfg.fullbright = !cfg.fullbright;
+                      NovaConfig.save();
+                      notice(mc, "Fullbright", cfg.fullbright);
+                  }
+
+                  ClientPlayerEntity player = mc.player;
+
+                  // --- Zoom (segurar a tecla) ---
+                  boolean wantZoom = player != null && mc.currentScreen == null && zoomKey.isPressed();
+                  if (wantZoom && !zooming) {
+                      savedFov = mc.options.getFov().getValue();
+                      mc.options.getFov().setValue(cfg.zoomFov);
+                      zooming = true;
+                  } else if (!wantZoom && zooming) {
+                      mc.options.getFov().setValue(savedFov);
+                      zooming = false;
+                  }
+
+                  if (player == null) {
+                      return;
+                  }
+
+                  // --- Auto Sprint ---
+                  if (cfg.autoSprint
+                          && !player.isSprinting()
+                          && player.input.movementForward > 0.8f
+                          && !player.isSneaking()
+                          && !player.isUsingItem()
+                          && !player.horizontalCollision
+                          && !player.isFallFlying()
+                          && !player.hasStatusEffect(StatusEffects.BLINDNESS)
+                          && player.getHungerManager().getFoodLevel() > 6) {
+                      player.setSprinting(true);
+                  }
+
+                  // --- Fullbright (efeito de visão noturna só no cliente, sem partículas/ícone) ---
+                  if (cfg.fullbright) {
+                      StatusEffectInstance current = player.getStatusEffect(StatusEffects.NIGHT_VISION);
+                      if (current == null || (nightVisionApplied && current.getDuration() < 400)) {
+                          player.addStatusEffect(new StatusEffectInstance(
+                                  StatusEffects.NIGHT_VISION, 100000, 0, false, false, false));
+                          nightVisionApplied = true;
+                      }
+                  } else if (nightVisionApplied) {
+                      player.removeStatusEffect(StatusEffects.NIGHT_VISION);
+                      nightVisionApplied = false;
+                  }
+              }
+
+              private static void notice(MinecraftClient mc, String name, boolean on) {
+                  if (mc.player != null) {
+                      mc.player.sendMessage(Text.literal(name + ": " + (on ? "ON" : "OFF")), true);
+                  }
+              }
+          }
+          NOVA_EOF_MARKER
+
+      - name: Build
+        run: gradle build --no-daemon
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: novaclient-jar
+          path: "build/libs/novaclient-*[0-9].jar"
